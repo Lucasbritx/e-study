@@ -10,7 +10,14 @@ Object.defineProperty(globalThis,'navigator',{value:dom.window.navigator,configu
 globalThis.IS_REACT_ACT_ENVIRONMENT=true;
 dom.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 dom.window.HTMLDialogElement.prototype.close=function(){this.open=false};
-globalThis.fetch=async()=>({ok:true,json:async()=>({ai:false})});
+let workspace=null,saveError=false;
+globalThis.fetch=async(url,options={})=>{
+ if(url!=='/api/study')return {ok:true,json:async()=>({ai:false})};
+ if(options.method==='POST'&&!workspace)workspace={state:JSON.parse(options.body).state,revision:1};
+ if(options.method==='PUT'&&saveError)return {ok:false,status:503,json:async()=>({error:'Database unavailable'})};
+ if(options.method==='PUT')workspace={state:JSON.parse(options.body).state,revision:workspace.revision+1};
+ return {ok:true,json:async()=>({workspace:structuredClone(workspace)})};
+};
 const {createRoot}=await import('react-dom/client');
 const {default:App}=await import('../src/App.tsx');
 const {StudyProvider}=await import('../src/store.tsx');
@@ -18,7 +25,7 @@ const click=async element=>{assert.ok(element,'Expected an interactive element')
 const button=(text,scope=document)=>[...scope.querySelectorAll('button')].find(b=>b.textContent.trim()===text||(b.closest('nav')&&b.textContent.trim().endsWith(text)));
 const submit=async form=>{assert.ok(form,'Expected a form');await act(async()=>form.dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true})))};
 const input=(name,value)=>{const field=document.querySelector(`[name="${name}"]`);assert.ok(field,`Expected ${name} input`);field.value=value;};
-async function mount(seed=createSeed()){localStorage.clear();localStorage.setItem(STORAGE_KEY,JSON.stringify(seed));const root=createRoot(document.getElementById('root'));await act(async()=>root.render(React.createElement(StudyProvider,null,React.createElement(App))));return root}
+async function mount(seed=createSeed()){workspace=null;saveError=false;localStorage.clear();localStorage.setItem(STORAGE_KEY,JSON.stringify(seed));const root=createRoot(document.getElementById('root'));await act(async()=>root.render(React.createElement(React.StrictMode,null,React.createElement(StudyProvider,null,React.createElement(App)))));return root}
 async function unmount(root){await act(async()=>root.unmount())}
 test('React backlog creates, edits, schedules and deletes nested tasks without losing sessions',async()=>{
  const root=await mount();try{
@@ -38,7 +45,7 @@ test('React backlog creates, edits, schedules and deletes nested tasks without l
 });
 test('legacy data survives React migration and all workspace screens render',async()=>{
  const legacy=createSeed();delete legacy.goals;delete legacy.tasks;legacy.resources[0].progress=5;const root=await mount(legacy);try{
-  const saved=JSON.parse(localStorage.getItem(STORAGE_KEY));assert.equal(saved.resources[0].progress,5);assert.deepEqual(saved.goals,[]);
+  const saved=workspace.state;assert.equal(saved.resources[0].progress,5);assert.deepEqual(saved.goals,[]);assert.ok(localStorage.getItem('e-study-v1-migration-backup'));
   for(const name of ['Study backlog','My subjects','Books & courses','Study calendar','AI study coach','Overview']){await click(button(name));assert.ok(document.querySelector('h1'))}
   await click(button('Complete Type narrowing & inference')||document.querySelector('[aria-label="Complete Type narrowing & inference"]'));
   assert.equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).sessions[0].done,true);
@@ -46,7 +53,7 @@ test('legacy data survives React migration and all workspace screens render',asy
 });
 test('React escapes user titles and preserves malformed stored data',async()=>{
  const seed=createSeed();seed.goals=[{id:'g',title:'<script>alert(1)</script>',description:'',status:'backlog',priority:'normal',due:'',resource:'',subject:''}];let root=await mount(seed);try{await click(button('Study backlog'));assert.match(document.body.textContent,/<script>alert\(1\)<\/script>/);assert.equal(document.querySelectorAll('script').length,0)}finally{await unmount(root)}
- localStorage.setItem(STORAGE_KEY,'{invalid');root=createRoot(document.getElementById('root'));try{await act(async()=>root.render(React.createElement(StudyProvider,null,React.createElement(App))));assert.match(document.querySelector('[role="alert"]').textContent,/could not be loaded/);assert.equal(localStorage.getItem(STORAGE_KEY),'{invalid')}finally{await unmount(root)}
+ workspace=null;localStorage.setItem(STORAGE_KEY,'{invalid');root=createRoot(document.getElementById('root'));try{await act(async()=>root.render(React.createElement(React.StrictMode,null,React.createElement(StudyProvider,null,React.createElement(App)))));assert.match(document.querySelector('[role="alert"]').textContent,/could not be loaded/);assert.equal(localStorage.getItem(STORAGE_KEY),'{invalid')}finally{await unmount(root)}
 });
 test('offline reading review saves notes, reflection and follow-up session',async()=>{
  const root=await mount();try{
@@ -56,5 +63,15 @@ test('offline reading review saves notes, reflection and follow-up session',asyn
   const answer=[...document.querySelectorAll('dialog textarea')].at(-1);await act(async()=>{Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype,'value').set.call(answer,'Check the kind property before using a union member.');answer.dispatchEvent(new Event('input',{bubbles:true}))});
   await submit([...document.querySelectorAll('dialog form')].at(-1));
   const saved=JSON.parse(localStorage.getItem(STORAGE_KEY));assert.equal(saved.reviews.length,1);assert.match(saved.reviews[0].answer,/Check the kind/);assert.equal(saved.resources[0].notes.length,1);assert.match(saved.sessions.at(-1).title,/Recall chapter/);assert.equal(saved.sessions.at(-1).duration,15);
+ }finally{await unmount(root)}
+});
+test('failed saves show an error, retain the browser copy, and can retry',async()=>{
+ const root=await mount();try{
+  saveError=true;await click(document.querySelector('[aria-label="Complete Type narrowing & inference"]'));
+  assert.match(document.querySelector('[role="alert"]').textContent,/Database unavailable/);
+  assert.equal(JSON.parse(localStorage.getItem(STORAGE_KEY)).sessions[0].done,true);
+  assert.equal(workspace.state.sessions[0].done,false);
+  saveError=false;await click(button('Retry save'));
+  assert.equal(workspace.state.sessions[0].done,true);assert.equal(document.querySelector('[role="alert"]'),null);
  }finally{await unmount(root)}
 });
