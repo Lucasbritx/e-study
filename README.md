@@ -1,6 +1,9 @@
-# e-study
+# E-study
 
 A local personal study workspace with learning goals, nested tasks, books, courses, reading reviews, a weekly calendar, and Codex CLI coaching.
+
+<img width="1416" height="741" alt="image" src="https://github.com/user-attachments/assets/510a4435-ea3b-4347-87fe-c4c569d77256" />
+
 
 ## Run
 
